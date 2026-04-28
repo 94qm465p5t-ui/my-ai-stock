@@ -5,85 +5,95 @@ import pandas as pd
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
-# --- ページ設定 ---
+# --- 1. ページ・自動更新設定 ---
 st.set_page_config(page_title="AI Live Strategist", layout="wide")
-
-# 1分（60000ミリ秒）ごとに画面を自動更新する設定
+# 60秒ごとに自動リフレッシュ
 st_autorefresh(interval=60000, key="datarefresh")
 
-# 🔑 Geminiの設定
-API_KEY = st.secrets["GEMINI_API_KEY"]
-genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+# --- 2. Gemini APIの設定 ---
+try:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+    genai.configure(api_key=API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+except:
+    st.error("APIキーが設定されていません。Secretsを確認してください。")
+    st.stop()
 
 st.title("📡 AI Live Strategist (1分更新分析)")
 
-# --- サイドバー ---
-input_code = st.sidebar.text_input("監視銘柄 (4桁)", "7203")
+# --- 3. サイドバー設定 ---
+input_code = st.sidebar.text_input("監視銘柄コード (4桁)", "7203")
 ticker = f"{input_code}.T" if input_code.isdigit() else input_code
 
-# データ取得
+# データ取得（デイトレ用1分足）
 df = yf.download(ticker, period="1d", interval="1m")
 
-if not df.empty:
-    # --- 指標計算 (MACD, RSI, VWAP) ---
-    # VWAP
-    v = df['Volume'].values
-    p = (df['High'] + df['Low'] + df['Close']).values / 3
-    df['VWAP'] = (p * v).cumsum() / v.cumsum()
-    
-    # MACD (12, 26, 9)
-    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = exp1 - exp2
-    df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-    
-    # 最新値の取得
-    last_p = df['Close'].iloc[-1]
-    last_vwap = df['VWAP'].iloc[-1]
-    last_macd = df['MACD'].iloc[-1]
-    last_sig = df['Signal'].iloc[-1]
-    vol_last = df['Volume'].iloc[-1]
+# --- 4. データが存在する場合の処理 ---
+if not df.empty and len(df) > 0:
+    try:
+        # 指標計算: VWAP
+        v = df['Volume'].values
+        p = (df['High'] + df['Low'] + df['Close']).values / 3
+        df['VWAP'] = (p * v).cumsum() / v.cumsum()
+        
+        # 指標計算: MACD
+        exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+        exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = exp1 - exp2
+        df['Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        
+        # 指標計算: RSI
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        df['RSI'] = 100 - (100 / (1 + (gain / loss)))
 
-    # --- メイン表示 ---
-    st.subheader(f"📊 {ticker} リアルタイム状況")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("現在値", f"{last_p:.1f}")
-    col2.metric("VWAP乖離", f"{last_p - last_vwap:.1f}")
-    col3.metric("MACDステータス", "ゴールデンクロス" if last_macd > last_sig else "デッドクロス")
+        # 最新データの抽出（型変換でエラーを防止）
+        last_p = float(df['Close'].iloc[-1])
+        last_vwap = float(df['VWAP'].iloc[-1])
+        last_macd = float(df['MACD'].iloc[-1])
+        last_sig = float(df['Signal'].iloc[-1])
+        last_rsi = float(df['RSI'].iloc[-1])
+        vol_last = int(df['Volume'].iloc[-1])
 
-    # --- AIへの指示 (プロンプトの超強化) ---
-    # ここに「今の情勢」などのコンテキストを自動生成します
-    prompt = f"""
-    あなたは凄腕のデイトレーダーです。以下のリアルタイムデータを踏まえ、現状を実況・分析してください。
-    
-    【銘柄情報】 {ticker}
-    【現在値】 {last_p}
-    【VWAP】 {last_vwap:.1f} (これより上なら強気)
-    【MACD】 値:{last_macd:.2f} / シグナル:{last_sig:.2f}
-    【出来高】 直近1分間で {vol_last} 株の商い
-    
-    分析の型：
-    「価格がVWAPの〇〇に位置し、MACDが〇〇を示唆している。出来高の推移は〇〇だ。したがって、今は〇〇すべきだ。」
-    という形式で、30～50文字程度の鋭い考察を述べて。
-    """
+        # --- 5. メイン表示 ---
+        st.subheader(f"📊 {ticker} リアルタイム状況")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("現在値", f"{last_p:.1f}")
+        c2.metric("VWAP乖離", f"{last_p - last_vwap:.1f}")
+        status = "買い優勢" if last_macd > last_sig else "売り優勢"
+        c3.metric("MACD診断", status)
 
-    # AI診断（自動で実行される）
-    with st.container():
+        # --- 6. AI実況セクション ---
         st.write("---")
-        st.markdown("### 🔮 AIのリアルタイム実況解説")
-        try:
-            res = model.generate_content(prompt)
-            st.success(res.text)
-        except:
-            st.write("AI分析更新中...")
+        st.markdown("### 🔮 AIストラテジストの実況解説")
+        
+        prompt = f"""
+        あなたはプロのデイトレーダーです。以下のデータを踏まえ、現状を実況・分析してください。
+        銘柄:{ticker}, 現在値:{last_p}, VWAP:{last_vwap:.1f}, MACD:{last_macd:.2f}, RSI:{last_rsi:.1f}
+        
+        「価格がVWAPの〇〇にあり、MACDとRSIから〇〇と判断できる。だから、今は〇〇すべきだ」
+        という形式で、論理的な日本語で40文字程度で答えて。
+        """
 
-    # チャート表示
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='1分足'))
-    fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], name='VWAP', line=dict(color='yellow', dash='dot')))
-    fig.update_layout(height=400, template="plotly_dark", xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
+        with st.container(border=True):
+            try:
+                res = model.generate_content(prompt)
+                st.success(f"**{res.text}**")
+                st.caption(f"最終更新：{pd.Timestamp.now(tz='Asia/Tokyo').strftime('%H:%M:%S')}")
+            except:
+                st.write("AI分析を更新中...")
 
+        # --- 7. チャート表示 ---
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='1分足'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], name='VWAP', line=dict(color='yellow', width=2, dash='dot')))
+        fig.update_layout(height=450, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"データ処理中にエラーが発生しました。市場が開くまでお待ちください。")
+        # st.write(e) # デバッグ用
 else:
-    st.warning("市場稼働時間外、またはデータ取得エラーです。")
+    st.info("💡 現在、有効なリアルタイムデータが取得できません。市場稼働時間（平日9:00〜15:00）に自動的に開始されます。")
+    st.image("https://images.unsplash.com/photo-1611974717483-5828d1dd0fb8?auto=format&fit=crop&q=80&w=1000", caption="Waiting for market open...")
