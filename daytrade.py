@@ -6,26 +6,33 @@ import numpy as np
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
-# ページ設定
+# --- 1. ページ・自動更新設定 ---
 st.set_page_config(page_title="AI Live Strategist", layout="wide")
-st_autorefresh(interval=60000, key="datarefresh")
+# 更新間隔を90秒に設定（アクセス制限回避のため少し緩和）
+st_autorefresh(interval=90000, key="datarefresh")
 
-# API設定
-try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
-    genai.configure(api_key=API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-except:
-    st.error("APIキーを設定してください")
+# --- 2. Gemini APIの設定 (最安定化バージョン) ---
+# Secretsから直接読み込み、エラーがあれば即停止させる
+if "GEMINI_API_KEY" not in st.secrets:
+    st.error("❌ StreamlitのSecretsに 'GEMINI_API_KEY' が設定されていません。")
     st.stop()
 
-st.title("📡 AI Live Strategist")
+try:
+    API_KEY = st.secrets["GEMINI_API_KEY"].strip().replace('"', '').replace("'", "")
+    genai.configure(api_key=API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+except Exception as e:
+    st.error(f"❌ APIキーの認証に失敗しました: {e}")
+    st.stop()
 
-# サイドバー
+st.title("📡 AI Live Strategist (安定版)")
+
+# --- 3. サイドバー設定 ---
 input_code = st.sidebar.text_input("監視銘柄コード", "BTC-USD")
 ticker = f"{input_code}.T" if input_code.isdigit() else input_code
 mode = st.sidebar.radio("モード選択", ["本番データ", "テスト(仮想データ)"])
 
+# --- 4. データ取得関数 ---
 def get_data(t, m):
     if m == "テスト(仮想データ)":
         dates = pd.date_range(pd.Timestamp.now(), periods=100, freq='1min')
@@ -38,15 +45,19 @@ def get_data(t, m):
         }, index=dates)
         return df
     else:
-        # auto_adjustをTrueにして、マルチインデックスを防ぐ
-        return yf.download(t, period="1d", interval="1m", progress=False, auto_adjust=True)
+        try:
+            # yfinanceのマルチインデックス対策
+            data = yf.download(t, period="1d", interval="1m", progress=False, auto_adjust=True)
+            return data
+        except:
+            return pd.DataFrame()
 
 df = get_data(ticker, mode)
 
-# --- データ解析 ---
+# --- 5. データ解析と表示 ---
 if not df.empty and len(df) > 0:
     try:
-        # マルチインデックス対策: 列名を単純化
+        # マルチインデックスの強制解除
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
@@ -55,30 +66,31 @@ if not df.empty and len(df) > 0:
         p = (df['High'] + df['Low'] + df['Close']) / 3
         df['VWAP'] = (p * v).cumsum() / v.cumsum()
         
-        # 値の抽出（.item()を使用して確実にスカラー値を取得）
-        last_p = float(df['Close'].iloc[-1])
-        last_vwap = float(df['VWAP'].iloc[-1])
+        # 最新値の抽出（.iloc[-1] で最後の要素を取得）
+        last_p = float(df['Close'].values[-1])
+        last_vwap = float(df['VWAP'].values[-1])
 
-        st.subheader(f"📊 {ticker} 分析結果")
+        st.subheader(f"📊 {ticker} 分析中")
         
-        # AI診断
+        # --- AI診断セクション ---
         try:
-            prompt = f"銘柄{ticker}, 価格{last_p:.1f}, VWAP{last_vwap:.1f}。今の戦略を「～だから～だ」で30字以内で語れ。"
+            prompt = f"銘柄{ticker}, 価格{last_p:.1f}, VWAP{last_vwap:.1f}。今の戦略を「～だから～だ」という形式でプロの視点から30字以内で語れ。"
             res = model.generate_content(prompt)
             st.success(f"**AI実況: {res.text}**")
-        except:
-            st.write("AI分析中...")
+        except Exception as ai_err:
+            st.warning("AI分析を準備中です...")
 
-        # チャート
+        # --- チャート表示 ---
         fig = go.Figure(data=[go.Candlestick(
             x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="価格"
         )])
-        fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], name="VWAP", line=dict(color='yellow')))
-        fig.update_layout(height=450, template="plotly_dark", xaxis_rangeslider_visible=False)
+        fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], name="VWAP", line=dict(color='yellow', width=2)))
+        fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
-        st.error(f"データ処理エラーが発生しました。サイドバーで『テストモード』を試してください。")
-        # st.write(e) # デバッグが必要な場合はコメントを外す
+        st.error("データ処理中にエラーが発生しました。サイドバーで『テストモード』に切り替えてみてください。")
 else:
-    st.warning("データが取得できません。市場が開いているか、銘柄コードを確認してください。")
+    st.info("💡 現在、有効なデータが取得できません。市場稼働時間外か、アクセス制限の可能性があります。")
+    if mode == "本番データ":
+        st.write("『テスト(仮想データ)』モードに切り替えると、動作テストが可能です。")
