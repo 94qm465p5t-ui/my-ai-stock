@@ -66,21 +66,14 @@ if not df.empty:
     
     st.subheader(f"📊 {ticker} 分析結果")
 
-    # --- 6. AI診断 (復活！) ---
+# --- 6. AI診断 (エラー回避強化版) ---
     with st.container(border=True):
-        try:
-            prompt = f"銘柄{ticker}, 価格{last_p:.1f}, VWAP{last_vwap:.1f}。今の状況から、プロのデイトレーダーとして次にすべき行動を「～だから～だ」という形式で30字以内でアドバイスして。"
-            res = model.generate_content(prompt)
-            st.markdown(f"### 🔮 AI軍師の託宣\n**{res.text}**")
-        except:
-            st.warning("AIが思考中、またはAPIキーのエラーです。Secretsを確認してください。")
-
-    # --- 7. チャート表示 ---
-    fig = go.Figure(data=[go.Candlestick(
-        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="価格"
-    )])
-    fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], name="VWAP", line=dict(color='yellow')))
-    fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("データを取得できません。モードを切り替えてください。")
+        if "model" in globals(): # modelが正常に設定されている時だけ動く
+            try:
+                prompt = f"銘柄{ticker}, 価格{last_p:.1f}。今後の短期的予想を30字以内で語れ。"
+                res = model.generate_content(prompt)
+                st.markdown(f"### 🔮 AI軍師の託宣\n**{res.text}**")
+            except Exception as e:
+                st.warning("AI通信エラー: キーの形式が正しくない可能性があります。")
+        else:
+            st.info("AIの初期化待ちです...")
