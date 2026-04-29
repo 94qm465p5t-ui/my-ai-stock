@@ -6,36 +6,34 @@ import numpy as np
 import plotly.graph_objects as go
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. ページ設定と自動更新 ---
+# --- 1. ページ構成と自動更新 (1分間隔) ---
 st.set_page_config(page_title="AI Live Strategist", layout="wide")
-# 60秒ごとに画面を自動更新
 st_autorefresh(interval=60000, key="datarefresh")
 
-# --- 2. Gemini APIの設定 (エラー防止強化) ---
-if "GEMINI_API_KEY" not in st.secrets:
-    st.error("❌ Secretsに 'GEMINI_API_KEY' が設定されていません。")
-    st.stop()
+# --- 2. Gemini APIの徹底的なクリーン設定 ---
+def configure_ai():
+    if "GEMINI_API_KEY" not in st.secrets:
+        return None
+    try:
+        # APIキーから改行、空白、引用符を完全に除去
+        raw_key = st.secrets["GEMINI_API_KEY"]
+        clean_key = raw_key.strip().replace('"', '').replace("'", "").replace("\n", "").replace("\r", "")
+        genai.configure(api_key=clean_key)
+        return genai.GenerativeModel('gemini-1.5-flash')
+    except:
+        return None
 
-# グローバル変数としてモデルを初期化
-model = None
-try:
-    # 鍵から余計な空白を徹底的に排除
-    API_KEY = st.secrets["GEMINI_API_KEY"].strip().replace('"', '').replace("'", "")
-    genai.configure(api_key=API_KEY)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-except Exception as e:
-    st.error(f"⚠️ API初期化エラー。キーを確認してください。")
+model = configure_ai()
 
-st.title("📡 AI Live Strategist (最終完全版)")
+st.title("📡 AI Live Strategist (最終修正版)")
 
-# --- 3. サイドバー設定 ---
+# --- 3. 監視銘柄の設定 ---
 input_code = st.sidebar.text_input("監視銘柄コード", "BTC-USD")
 ticker = f"{input_code}.T" if input_code.isdigit() else input_code
-# 最初からテストモードを選択できるように「テスト」を先に配置
-mode = st.sidebar.radio("モード選択", ["テスト(仮想データ)", "本番データ"])
+mode = st.sidebar.radio("モード選択", ["本番データ", "テスト(仮想データ)"])
 
-# --- 4. データ取得関数 ---
-def get_data(t, m):
+# --- 4. データの取得 ---
+def get_stock_data(t, m):
     if m == "テスト(仮想データ)":
         dates = pd.date_range(pd.Timestamp.now(), periods=100, freq='1min')
         df = pd.DataFrame({
@@ -49,49 +47,47 @@ def get_data(t, m):
     else:
         try:
             return yf.download(t, period="1d", interval="1m", progress=False, auto_adjust=True)
-        except:
+        except Exception as e:
+            st.error(f"データ取得エラー: {e}")
             return pd.DataFrame()
 
-df = get_data(ticker, mode)
+df = get_stock_data(ticker, mode)
 
 # --- 5. 解析と表示 ---
 if not df.empty and len(df) > 0:
-    try:
-        # マルチインデックスの強制解除
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+    # マルチインデックス対策
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-        # 指標計算 (VWAP)
-        v = df['Volume']
-        p = (df['High'] + df['Low'] + df['Close']) / 3
-        df['VWAP'] = (p * v).cumsum() / v.cumsum()
-        
-        last_p = float(df['Close'].values[-1])
-        last_vwap = float(df['VWAP'].values[-1])
-        
-        st.subheader(f"📊 {ticker} 分析結果")
+    # VWAP計算
+    v = df['Volume']
+    p = (df['High'] + df['Low'] + df['Close']) / 3
+    df['VWAP'] = (p * v).cumsum() / v.cumsum()
+    
+    last_p = float(df['Close'].iloc[-1])
+    last_vwap = float(df['VWAP'].iloc[-1])
 
-        # --- 6. AI診断 (絶対止まらない書き方) ---
-        with st.container(border=True):
-            if model is not None:
-                try:
-                    prompt = f"銘柄{ticker}, 価格{last_p:.1f}, VWAP{last_vwap:.1f}。プロの視点で「～だから～だ」と30字以内で助言して。"
-                    res = model.generate_content(prompt)
-                    st.markdown(f"### 🔮 AI軍師の託宣\n**{res.text}**")
-                except Exception as ai_err:
-                    st.warning("⚠️ AIが現在応答できません。APIキーの形式（Secrets）を再確認してください。")
-            else:
-                st.info("💡 AIを準備中です...")
+    # --- 6. AI実況セクション ---
+    with st.expander("🔮 AI軍師のリアルタイム分析", expanded=True):
+        if model:
+            try:
+                diff = last_p - last_vwap
+                status = "上振れ" if diff > 0 else "下振れ"
+                prompt = f"銘柄:{ticker}, 価格:{last_p:.1f}, VWAP:{last_vwap:.1f}。現在VWAPより{status}している。プロのデイトレーダーとして一言アドバイスを30字以内で。語尾は「～だ」で。"
+                response = model.generate_content(prompt)
+                st.success(f"**{response.text}**")
+            except:
+                st.warning("AIが応答できません。APIキーが正しいか確認してください。")
+        else:
+            st.info("APIキーを設定するとAI実況が開始されます。")
 
-        # --- 7. チャート表示 ---
-        fig = go.Figure(data=[go.Candlestick(
-            x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="価格"
-        )])
-        fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], name="VWAP", line=dict(color='yellow', width=2)))
-        fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
-        st.plotly_chart(fig, use_container_width=True)
+    # --- 7. チャート表示 ---
+    fig = go.Figure(data=[go.Candlestick(
+        x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="価格"
+    )])
+    fig.add_trace(go.Scatter(x=df.index, y=df['VWAP'], name="VWAP", line=dict(color='yellow', width=1.5)))
+    fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=30, b=10))
+    st.plotly_chart(fig, use_container_width=True)
 
-    except Exception as e:
-        st.error("データ処理中にエラーが発生しました。モードを切り替えてください。")
 else:
-    st.info("💡 データを読み込んでいます。市場時間外の場合は『テストモード』にしてください。")
+    st.info("💡 データを取得中、または市場時間外です。テストモードをお試しください。")
