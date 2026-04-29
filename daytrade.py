@@ -8,24 +8,20 @@ from streamlit_autorefresh import st_autorefresh
 
 # --- 1. ページ・自動更新設定 ---
 st.set_page_config(page_title="AI Live Strategist", layout="wide")
-# 更新間隔を90秒に設定（アクセス制限回避のため少し緩和）
 st_autorefresh(interval=90000, key="datarefresh")
 
-# --- 2. Gemini APIの設定 (最安定化バージョン) ---
-# Secretsから直接読み込み、エラーがあれば即停止させる
-if "GEMINI_API_KEY" not in st.secrets:
-    st.error("❌ StreamlitのSecretsに 'GEMINI_API_KEY' が設定されていません。")
-    st.stop()
+# --- 2. Gemini APIの設定 (直接埋め込み版) ---
+# 下の "ここにAPIキーを貼る" をあなたの実際のキー（AIza...）に書き換えてください
+MY_API_KEY = "ここにあなたのAPIキーを貼り付けてください"
 
 try:
-    API_KEY = st.secrets["GEMINI_API_KEY"].strip().replace('"', '').replace("'", "")
-    genai.configure(api_key=API_KEY)
+    genai.configure(api_key=MY_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')
 except Exception as e:
-    st.error(f"❌ APIキーの認証に失敗しました: {e}")
+    st.error(f"API設定エラー: {e}")
     st.stop()
 
-st.title("📡 AI Live Strategist (安定版)")
+st.title("📡 AI Live Strategist (最終修正版)")
 
 # --- 3. サイドバー設定 ---
 input_code = st.sidebar.text_input("監視銘柄コード", "BTC-USD")
@@ -46,7 +42,6 @@ def get_data(t, m):
         return df
     else:
         try:
-            # yfinanceのマルチインデックス対策
             data = yf.download(t, period="1d", interval="1m", progress=False, auto_adjust=True)
             return data
         except:
@@ -57,30 +52,27 @@ df = get_data(ticker, mode)
 # --- 5. データ解析と表示 ---
 if not df.empty and len(df) > 0:
     try:
-        # マルチインデックスの強制解除
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
-        # 指標計算
         v = df['Volume']
         p = (df['High'] + df['Low'] + df['Close']) / 3
         df['VWAP'] = (p * v).cumsum() / v.cumsum()
         
-        # 最新値の抽出（.iloc[-1] で最後の要素を取得）
         last_p = float(df['Close'].values[-1])
         last_vwap = float(df['VWAP'].values[-1])
 
         st.subheader(f"📊 {ticker} 分析中")
         
-        # --- AI診断セクション ---
+        # AI診断
         try:
-            prompt = f"銘柄{ticker}, 価格{last_p:.1f}, VWAP{last_vwap:.1f}。今の戦略を「～だから～だ」という形式でプロの視点から30字以内で語れ。"
+            prompt = f"銘柄{ticker}, 価格{last_p:.1f}, VWAP{last_vwap:.1f}。今の戦略を「～だから～だ」で30字以内で語れ。"
             res = model.generate_content(prompt)
             st.success(f"**AI実況: {res.text}**")
-        except Exception as ai_err:
-            st.warning("AI分析を準備中です...")
+        except:
+            st.warning("AIが応答していません。APIキーを確認してください。")
 
-        # --- チャート表示 ---
+        # チャート
         fig = go.Figure(data=[go.Candlestick(
             x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="価格"
         )])
@@ -89,8 +81,6 @@ if not df.empty and len(df) > 0:
         st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
-        st.error("データ処理中にエラーが発生しました。サイドバーで『テストモード』に切り替えてみてください。")
+        st.error("エラーが発生しました。サイドバーでテストモードを試してください。")
 else:
-    st.info("💡 現在、有効なデータが取得できません。市場稼働時間外か、アクセス制限の可能性があります。")
-    if mode == "本番データ":
-        st.write("『テスト(仮想データ)』モードに切り替えると、動作テストが可能です。")
+    st.info("💡 データが取得できません。テストモードに切り替えると動作を確認できます。")
